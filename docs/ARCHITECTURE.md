@@ -1,5 +1,7 @@
 # Architecture
 
+> The computer transport and installation sections below describe the original Orgo architecture. The current existing-sandbox contract, dedicated roots, optional providers and known integration limits are documented in [private-computer.md](private-computer.md).
+
 A web app (`web/`) and a Node server (`server/`) sit in front of Hermes agents. Hermes owns each Bot's agent loop, history, memory and model. The server adds the things Hermes does not have: the chat interface, one screen per Bot on a shared Orgo computer, connected apps with approvals, routines, the Library, and voice.
 
 ```text

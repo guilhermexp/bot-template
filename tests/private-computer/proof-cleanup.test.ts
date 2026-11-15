@@ -1,0 +1,9 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+test('proof cleanup retains unrelated files and closes sockets after assertion failure',async()=>{
+ const module=new URL('./proof-resources.mjs',import.meta.url);assert.ok(fs.existsSync(module),'proof needs failure-safe ownership scope');const {ProofScope}=await import(module.href);const scope=new ProofScope();const dir=fs.mkdtempSync(path.join(os.tmpdir(),'proof-cleanup-'));const other=path.join(dir,'computer-proof.txt');fs.writeFileSync(other,'retained');let terminated=0;scope.socket({terminate(){terminated++;}});const own=scope.file(dir,'computer-proof.txt');fs.writeFileSync(own,'owned');const link=scope.symlink('/etc/passwd',dir);try{throw Error('injected assertion');}catch{}finally{await scope.cleanup();}assert.equal(fs.readFileSync(other,'utf8'),'retained');assert.equal(fs.existsSync(own),false);assert.equal(fs.existsSync(link),false);assert.equal(terminated,1);fs.rmSync(dir,{recursive:true});
+});
+test('failed exclusive artifact creation never registers cleanup of a pre-existing file',async()=>{
+ const {ProofScope}=await import(new URL('./proof-resources.mjs',import.meta.url).href);const scope=new ProofScope();scope.nonce='collision';const dir=fs.mkdtempSync(path.join(os.tmpdir(),'proof-collision-'));const file=path.join(dir,'collision-existing');const link=path.join(dir,'collision-proof-escape');fs.writeFileSync(file,'foreign');fs.writeFileSync(link,'foreign link name');
+ try{assert.throws(()=>scope.file(dir,'existing'),/EEXIST/);assert.throws(()=>scope.symlink('/etc/passwd',dir),/EEXIST/);}finally{await scope.cleanup();}
+ assert.equal(fs.readFileSync(file,'utf8'),'foreign');assert.equal(fs.readFileSync(link,'utf8'),'foreign link name');fs.rmSync(dir,{recursive:true});
+});

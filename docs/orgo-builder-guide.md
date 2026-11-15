@@ -1,5 +1,7 @@
 # Orgo builder's guide for Grokbot
 
+> Historical provider research, retained for provenance. The application no longer calls Orgo or uses its lifecycle API. Use [private-computer.md](private-computer.md) for the current Daytona deployment contract.
+
 How to build Grokbot (one persistent Orgo VM per user, one screen per Bot) on Orgo. Everything here comes from Orgo's official docs.
 
 - **Sources:** the full docs dump `docs.orgo.ai/llms-full.txt` (24,038 lines, every page incl. the full API reference; read 2026-11-09) and the OpenAPI spec `https://docs.orgo.ai/api-reference/openapi.json` (Orgo API 2.0.0, 101 operations).

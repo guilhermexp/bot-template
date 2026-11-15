@@ -14,13 +14,14 @@ import subprocess
 import time
 import urllib.request
 
-ROOT = '/opt/hq'
+APP_ROOT = os.path.realpath(os.environ['HQ_ROOT'])
+ROOT = APP_ROOT + '/desktop'
 SCREENS = ROOT + '/screens'
 JOBS = ROOT + '/jobs'
 EXT = ROOT + '/ext'
-LOGS = '/var/log/hq'
-PROFILES = '/root/grokbot/profiles'
-HOME_PORT = 7391
+LOGS = APP_ROOT + '/logs'
+PROFILES = APP_ROOT + '/profiles'
+HOME_PORT = 17391
 HOME_URL = 'http://127.0.0.1:%d' % HOME_PORT
 BROWSER_CLASS = 'HQBrowser'
 SCREEN_FLAG = '--hq-screen'
@@ -67,6 +68,7 @@ def write_json(path, obj):
 
 
 def screen_dir(n):
+    if int(n) not in range(100, 104): raise ValueError('Unknown app screen')
     return '%s/%d' % (SCREENS, int(n))
 
 
@@ -167,8 +169,24 @@ def marked_pids(n):
     return [pid for pid in all_pids() if pid != me and environ_of(pid).get('HQ_SCREEN') == str(int(n))]
 
 
+def process_identity(pid):
+    stat = read_text('/proc/%d/stat' % pid)
+    return {'pid': pid, 'starttime': stat.rsplit(')', 1)[1].split()[19], 'command': cmdline(pid)} if stat else None
+
+
+def remember(pid):
+    time.sleep(0.2)
+    rec = process_identity(pid)
+    if rec: write_json(ROOT + '/processes/%d.json' % pid, rec)
+
+
+def owned(pid):
+    rec = read_json(ROOT + '/processes/%d.json' % pid)
+    return bool(rec and rec == process_identity(pid))
+
+
 def stop_pids(pids, grace=4.0):
-    pids = [p for p in pids if alive(p)]
+    pids = [p for p in pids if alive(p) and owned(p)]
     for p in pids:
         try:
             os.kill(p, signal.SIGTERM)
@@ -178,7 +196,7 @@ def stop_pids(pids, grace=4.0):
     while time.time() < end and any(alive(p) for p in pids):
         time.sleep(0.15)
     for p in pids:
-        if alive(p):
+        if alive(p) and owned(p):
             try:
                 os.kill(p, signal.SIGKILL)
             except OSError:
@@ -236,6 +254,7 @@ def private_bus(n):
     lines = [l.strip() for l in out.splitlines() if l.strip()]
     if code != 0 or len(lines) < 2 or not lines[1].isdigit():
         return None
+    remember(int(lines[1]))
     write_json(state_path, {'address': lines[0], 'pid': int(lines[1]), 'made': BUS_MADE})
     _light_terminal(dict(base_env(n), DBUS_SESSION_BUS_ADDRESS=lines[0]))
     return lines[0]
@@ -267,17 +286,25 @@ def _light_terminal(env):
 
 
 def base_env(n):
+    screen_dir(n)  # validate before accessing any display
     env = {
-        'PATH': os.environ.get('PATH') or '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        'HOME': os.environ.get('HOME') or '/root',
+        'PATH': APP_ROOT + '/runtime/x11/usr/bin:' + (os.environ.get('PATH') or '/usr/bin:/bin'),
+        'LD_LIBRARY_PATH': APP_ROOT + '/runtime/x11/usr/lib/x86_64-linux-gnu',
+        'HOME': APP_ROOT + '/screens/%d/home' % int(n),
+        'HQ_ROOT': APP_ROOT,
+        'XDG_CONFIG_HOME': APP_ROOT + '/screens/%d/home/.config' % int(n),
+        'XDG_CACHE_HOME': APP_ROOT + '/screens/%d/home/.cache' % int(n),
+        'XDG_DATA_HOME': APP_ROOT + '/screens/%d/home/.local/share' % int(n),
         'USER': os.environ.get('USER') or 'root',
         'LANG': os.environ.get('LANG') or 'C.UTF-8',
         'DISPLAY': ':%d' % int(n),
+        'XAUTHORITY': APP_ROOT + '/screens/%d/Xauthority' % int(n),
         'HQ_SCREEN': str(int(n)),
         'GTK_THEME': light_theme(),
         'XDG_CURRENT_DESKTOP': 'XFCE',
         'NO_AT_BRIDGE': '1',
     }
+    os.makedirs(env['HOME'], exist_ok=True)
     runtime = '/run/user/%d' % os.getuid()
     if os.path.isdir(runtime):
         env['XDG_RUNTIME_DIR'] = runtime
@@ -312,6 +339,7 @@ def spawn(argv, env, log_name, cwd=None):
     finally:
         log.close()
     _children.append(p)
+    remember(p.pid)
     return p.pid
 
 
@@ -649,7 +677,7 @@ def settle_window(n, pid, wait=4.0):
 
 def open_files(n):
     env = screen_env(n)
-    start = '/root/grokbot/files' if os.path.isdir('/root/grokbot/files') else env['HOME']
+    start = APP_ROOT + '/files' if os.path.isdir(APP_ROOT + '/files') else env['HOME']
     for name in ('thunar', 'nautilus', 'nemo', 'pcmanfm', 'caja'):
         if shutil.which(name):
             return spawn([name, start], env, 'files-%d' % int(n))
@@ -760,7 +788,10 @@ def stop_browser(bot_id, started_by_us=False):
     runs on that profile is left alone.
     """
     want = '--user-data-dir=%s' % profile_dir(bot_id)
-    mains = [pid for pid, _ in our_browser(bot_id)]
+    browsers = our_browser(bot_id)
+    for pid, n in browsers:
+        if n in range(100,104): refresh_browser_identity(pid, bot_id, n)
+    mains = [pid for pid, _ in browsers]
     if started_by_us:
         mains = [pid for pid in mains if _marked_screen(cmdline(pid)) is not None]
     if not mains:
@@ -877,16 +908,7 @@ def start_browser(n, bot_id, accent=None, restart=False, log=None):
     if not running:
         prepare_profile(bot_id, accent)
         env = screen_env(n)
-        argv = [
-            binary,
-            '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble',
-            '--password-store=basic', '--disable-dev-shm-usage',
-            '--remote-debugging-port=%d' % cdp_port(n),
-            '--user-data-dir=%s' % profile_dir(bot_id),
-            '--class=%s' % BROWSER_CLASS,
-            '--start-maximized',
-            '%s=%d' % (SCREEN_FLAG, n),     # ours: lets us tell later which screen this Chrome is on
-        ]
+        argv = browser_argv(n, bot_id, binary)
         spawn(argv, env, 'chrome-%d' % n)
         started = True
     # Wait until DevTools answers; that is when the browser is really up.
@@ -905,6 +927,7 @@ def start_browser(n, bot_id, accent=None, restart=False, log=None):
     if not mains:
         raise RuntimeError('Chrome did not start on screen %d (see %s/chrome-%d.log)' % (n, LOGS, n))
     pid = mains[0][0]
+    refresh_browser_identity(pid, bot_id, n)
     if not up:
         warnings.append('Chrome is running on screen %d but DevTools port %d does not answer' % (n, cdp_port(n)))
     if started and up:
@@ -923,40 +946,23 @@ def start_browser(n, bot_id, accent=None, restart=False, log=None):
 
 
 def _show_home(n, bot_id, warnings, say):
-    """On a brand new profile the first tab opens before the home extension is installed; swap it."""
-    ext = extension_id()
-    if not ext:
-        return
-    ext_dir = '%s/Default/Extensions/%s' % (profile_dir(bot_id), ext)
-    end = time.time() + 30
-    while time.time() < end and not os.path.isdir(ext_dir):
-        time.sleep(0.5)
-    if not os.path.isdir(ext_dir):
-        warnings.append('the home screen extension did not install in Chrome on screen %d' % n)
-        return
-    # A tab opened before the extension arrived shows Chrome's own new tab page. Our page is titled "Home".
+    """An unpacked profile-only extension has no Default/Extensions CRX directory."""
+    expected = ((look_for(n) or {}).get('bot') or {}).get('name')
+    end = time.time() + 15
     try:
-        end = time.time() + 5
         while time.time() < end:
-            time.sleep(0.5)
             pages = [t for t in cdp(n, '/json/list') if t.get('type') == 'page']
-            plain = [t for t in pages
-                     if t.get('url', '').startswith(('chrome://newtab', 'chrome://new-tab-page', 'about:blank'))
-                     and t.get('title') != 'Home']
-            if not plain:
-                if pages:
-                    return
-                continue
-            say('swapping %d plain new tab(s) for the home screen' % len(plain))
-            cdp(n, '/json/new?chrome://newtab/', method='PUT')
-            for t in plain:
-                try:
+            if any(t.get('title') in ('Home', expected) for t in pages): return
+            plain = [t for t in pages if t.get('url', '').startswith(('chrome://newtab', 'chrome://new-tab-page', 'about:blank'))]
+            if plain:
+                cdp(n, '/json/new?chrome://newtab/', method='PUT')
+                for t in plain:
                     urllib.request.urlopen('http://127.0.0.1:%d/json/close/%s' % (cdp_port(n), t['id']), timeout=3).read()
-                except Exception:
-                    pass
-            time.sleep(1.0)
-    except Exception as e:
-        warnings.append('could not switch Chrome on screen %d to the home screen: %s' % (n, e))
+            elif pages: return
+            time.sleep(.5)
+        warnings.append('the profile home extension did not answer on screen %d' % n)
+    except Exception:
+        warnings.append('could not confirm profile home on screen %d' % n)
 
 
 def open_browser(n):
@@ -980,3 +986,25 @@ def open_browser(n):
         activate_window(n, wins[-1]['id'])
         return wins[-1]['pid']
     return 0
+
+# Explicit launch contract and safe shell-wrapper exec reconciliation.
+def browser_argv(n, bot_id, binary):
+    screen_dir(n)
+    return [binary, '--no-sandbox', '--no-first-run', '--no-default-browser-check',
+            '--hide-crash-restore-bubble', '--password-store=basic', '--disable-dev-shm-usage',
+            '--disable-gpu', '--disable-background-networking', '--disable-component-update',
+            '--disable-sync', '--renderer-process-limit=1', '--no-zygote',
+            '--disable-features=DisableLoadExtensionCommandLineSwitch',
+            '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=%d' % cdp_port(n),
+            '--user-data-dir=%s' % profile_dir(bot_id), '--class=%s' % BROWSER_CLASS,
+            '--start-maximized', '--load-extension=' + EXT + '/src',
+            '--disable-extensions-except=' + EXT + '/src', '%s=%d' % (SCREEN_FLAG, n)]
+
+def refresh_browser_identity(pid, bot_id, n):
+    old = read_json(ROOT + '/processes/%d.json' % pid)
+    current = process_identity(pid)
+    if not old or not current or old['starttime'] != current['starttime']: return False
+    args = current['command']
+    if '--user-data-dir=' + profile_dir(bot_id) not in args or '--hq-screen=' + str(n) not in args: return False
+    write_json(ROOT + '/processes/%d.json' % pid, current)
+    return True

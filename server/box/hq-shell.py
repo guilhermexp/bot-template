@@ -16,6 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hqlib  # noqa: E402
 
 import gi  # noqa: E402
+# Optional distro bridge is extracted into our runtime, never installed globally.
+bridge = hqlib.APP_ROOT + '/runtime/x11/usr/lib/python3/dist-packages/gi'
+if os.path.isdir(bridge): gi.__path__.append(bridge)
+gi.require_foreign('cairo')
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
 gi.require_version('GdkPixbuf', '2.0')

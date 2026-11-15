@@ -35,10 +35,7 @@ sys.path.insert(0, HERE)
 import hqlib  # noqa: E402
 from hqlib import ROOT, JOBS, EXT, LOGS  # noqa: E402
 
-POLICY_DIRS = ('/etc/opt/chrome/policies/managed', '/etc/chromium/policies/managed')
-POLICY_NAME = 'hq.json'
-GTK_SETTINGS = os.path.expanduser('~/.config/gtk-3.0/settings.ini')
-
+GTK_SETTINGS = hqlib.APP_ROOT + '/home/.config/gtk-3.0/settings.ini'
 
 class Fatal(Exception):
     """The screen would be unusable; the caller should hear about it."""
@@ -118,10 +115,10 @@ def home_alive():
 
 def start_home(restart=False):
     if restart:
-        hqlib.stop_pids([p for p in hqlib.all_pids() if any(a.endswith('hq-home.py') for a in hqlib.cmdline(p))], grace=2)
+        hqlib.stop_pids([p for p in hqlib.all_pids() if ROOT + '/hq-home.py' in hqlib.cmdline(p) and hqlib.owned(p)], grace=2)
     elif home_alive():
         return True
-    env = hqlib.base_env(99)
+    env = hqlib.base_env(100)
     for key in ('HQ_SCREEN', 'DISPLAY', 'GTK_THEME'):
         env.pop(key, None)
     hqlib.spawn([sys.executable, ROOT + '/hq-home.py'], env, 'home')
@@ -139,7 +136,7 @@ def gtk_works():
     code, _ = hqlib.run([sys.executable, '-c',
                          "import gi; gi.require_version('Gtk','3.0'); gi.require_version('GdkPixbuf','2.0'); "
                          "from gi.repository import Gtk, Gdk, GdkPixbuf; import cairo"],
-                        env={k: v for k, v in hqlib.base_env(99).items() if k not in ('DISPLAY', 'HQ_SCREEN')}, timeout=20)
+                        env={k: v for k, v in hqlib.base_env(100).items() if k not in ('DISPLAY', 'HQ_SCREEN')}, timeout=20)
     return code == 0
 
 
@@ -268,33 +265,6 @@ def build_extension(warnings):
     return state
 
 
-def write_policy(ext_id, warnings):
-    """Machine-wide: every Chrome on this computer gets the home screen extension."""
-    policy = {
-        'ExtensionInstallForcelist': ['%s;%s/ext/updates.xml' % (ext_id, hqlib.HOME_URL)],
-        'NTPFooterExtensionAttributionEnabled': False,
-        'NTPFooterManagementNoticeEnabled': False,
-        'CommandLineFlagSecurityWarningsEnabled': False,
-        # 1 = DevTools may attach everywhere. Without it Chrome refuses to let a DevTools client
-        # (the bot's browser driver) talk to a tab that shows a policy-installed extension page,
-        # which is exactly what the home screen is: the tab accepts the connection and never answers.
-        'DeveloperToolsAvailability': 1,
-    }
-    text = json.dumps(policy, indent=2) + '\n'
-    wrote = []
-    for folder in POLICY_DIRS:
-        if folder != POLICY_DIRS[0] and not os.path.isdir(os.path.dirname(os.path.dirname(folder))):
-            continue
-        path = os.path.join(folder, POLICY_NAME)
-        try:
-            if hqlib.read_text(path) != text:
-                hqlib.write_atomic(path, text)
-            wrote.append(path)
-        except OSError as e:
-            warnings.append('could not write Chrome policy %s: %s' % (path, e))
-    return wrote
-
-
 def write_gtk_settings(warnings):
     """Machine-wide (for this user): GTK apps start light instead of dark."""
     wanted = {
@@ -328,17 +298,17 @@ def do_base(base_hash, warnings):
     os.makedirs(ROOT + '/screens', exist_ok=True)
     os.makedirs(LOGS, exist_ok=True)
     os.makedirs(hqlib.PROFILES, exist_ok=True)
-    installed = install_packages(warnings)
+    installed = []  # dependency installation is explicit, never at app boot
     shell_ok = gtk_works()
     if not shell_ok:
         warnings.append('GTK for Python is not available, so screens get a plain colour and no dock')
     state = build_extension(warnings)
-    policy_files = write_policy(state['id'], warnings) if state.get('id') else []
+    policy_files = []  # extension loads only in our profiles
     write_gtk_settings(warnings)
     if not start_home(restart=True):
         warnings.append('the home screen server did not start (see %s/home.log)' % LOGS)
     # Desktop pieces that are already up run the old code; bring them back on the new one.
-    for pid in [p for p in hqlib.all_pids() if any(a.endswith('hq-shell.py') for a in hqlib.cmdline(p))]:
+    for pid in [p for p in hqlib.all_pids() if ROOT + '/hq-shell.py' in hqlib.cmdline(p) and hqlib.owned(p)]:
         args = hqlib.cmdline(pid)
         hqlib.stop_pids([pid], grace=2)
         if shell_ok and args[-1].isdigit() and hqlib.look_for(int(args[-1])):
@@ -423,7 +393,7 @@ def close_windows(n, keep_browsers):
     env = hqlib.base_env(n)
 
     def targets():
-        wins = [w for w in hqlib.windows(n) if not hqlib.is_desktop_piece(w)]
+        wins = [w for w in hqlib.windows(n) if not hqlib.is_desktop_piece(w) and hqlib.owned(w['pid'])]
         return [w for w in wins if not (keep_browsers and hqlib.is_browser_window(w))]
 
     wins = targets()
@@ -440,7 +410,7 @@ def close_windows(n, keep_browsers):
         if pid > 1 and pid not in protected and hqlib.display_number(hqlib.environ_of(pid).get('DISPLAY')) == n:
             hqlib.stop_pids([pid], grace=1.5)
         else:
-            hqlib.run(['xdotool', 'windowkill', str(int(w['id'], 16))], env=env, timeout=5)
+            pass  # unowned windows are never killed
     return len(targets())
 
 
@@ -566,6 +536,7 @@ def do_undress(n, bot_id):
 
 def main(argv):
     cmd = argv[0] if argv else ''
+    if cmd in ('go','undress','terminal','launch'): hqlib.screen_dir(int(argv[1]))
     if cmd == '_job':
         run_job(argv[1], argv[2], argv[3:])
     elif cmd == 'go':

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { gzipSync } from 'node:zlib';
+import { env } from './env.js';
 import { box, displayFor } from './box.js';
 
 /**
@@ -15,7 +16,7 @@ import { box, displayFor } from './box.js';
 
 export interface DeskBot { id: string; name: string; label: string; avatarShape: string; avatarColor: string }
 
-const ROOT = '/opt/hq';
+const ROOT = env.hqRoot + '/desktop';
 const SCRIPT = `${ROOT}/hq-screen.py`;
 /** Source file under server/box/ -> where it lives under /opt/hq on the computer. */
 const BOX_FILES: Record<string, string> = {
@@ -72,7 +73,7 @@ function parseReply(output: string): Reply {
 
 /** One call to hq-screen.py. A missing or failing script answers NOBASE so the caller can install it. */
 async function script(args: string[], screenId?: string, timeoutSec = 60): Promise<Reply> {
-  const cmd = `[ -f ${SCRIPT} ] && python3 ${SCRIPT} ${args.map(box.quote).join(' ')} 2>&1 || echo HQ_NOBASE`;
+  const cmd = `[ -f ${box.quote(SCRIPT)} ] && ${box.quote(env.deskPython)} ${box.quote(SCRIPT)} ${args.map(box.quote).join(' ')} 2>&1 || echo HQ_NOBASE`;
   const r = await box.bash(cmd, timeoutSec, screenId);
   return parseReply(r.output);
 }

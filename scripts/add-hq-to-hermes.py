@@ -2,7 +2,7 @@
 """Give the main Hermes agent the app's tools: add the `hq` MCP server to its config.yaml.
 
 Run on the computer, after install-on-computer.sh:
-    python3 add-hq-to-hermes.py [--config /root/.hermes/config.yaml] [--entry /opt/hq/data/hermes-mcp-hq.yaml] [--remove]
+    python3 add-hq-to-hermes.py [--config $HQ_ROOT/hermes-primary/config.yaml] [--entry $HQ_ROOT/config/hermes-mcp-hq.yaml] [--remove]
 
 The edit is plain text (the file's comments and layout stay as they are), a dated copy of the file
 is kept next to it, and the result is checked before it replaces the original: every other setting
@@ -11,10 +11,15 @@ must read back exactly as before. Hermes notices the change by itself; no restar
 import argparse, os, re, shutil, sys, time
 
 p = argparse.ArgumentParser()
-p.add_argument('--config', default='/root/.hermes/config.yaml')
-p.add_argument('--entry', default='/opt/hq/data/hermes-mcp-hq.yaml')
+p.add_argument('--config')
+p.add_argument('--entry')
 p.add_argument('--remove', action='store_true')
 a = p.parse_args()
+if not os.environ.get('HQ_ROOT'): sys.exit('Set HQ_ROOT to the dedicated app root before editing Hermes config.')
+root = os.path.realpath(os.environ['HQ_ROOT'])
+a.config = a.config or root+'/hermes-primary/config.yaml'
+a.entry = a.entry or root+'/config/hermes-mcp-hq.yaml'
+if not all(os.path.realpath(x).startswith(root + '/') for x in [a.config,a.entry]): sys.exit('Only dedicated HQ_ROOT files may be edited')
 
 try:
     import yaml
@@ -38,7 +43,7 @@ def section():
 def hq_range(s, e):
     """Line range of an existing `hq:` entry inside the section, or None."""
     for i in range(s + 1, e):
-        if re.match(r'^  hq:\s*(#.*)?$', lines[i]):
+        if re.match(r'^  hq:(?:\s|$)', lines[i]):
             j = i + 1
             while j < e and (not lines[j].strip() or re.match(r'^(   +|\t)', lines[j])):
                 j += 1

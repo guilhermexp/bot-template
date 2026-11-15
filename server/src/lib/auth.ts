@@ -33,7 +33,8 @@ export function userFromToken(t: string | undefined): User | null {
 
 export function userFromCookieHeader(cookieHeader: string | undefined): User | null {
   const m = cookieHeader?.split(/;\s*/).find((p) => p.startsWith(`${COOKIE}=`));
-  return userFromToken(m ? decodeURIComponent(m.slice(COOKIE.length + 1)) : undefined);
+  try { return userFromToken(m ? decodeURIComponent(m.slice(COOKIE.length + 1)) : undefined); }
+  catch { return null; } // malformed untrusted cookies are unauthenticated
 }
 
 export const requireUser: MiddlewareHandler<AuthVars> = async (c, next) => {
