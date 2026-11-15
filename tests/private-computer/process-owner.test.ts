@@ -1,0 +1,23 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawn} from 'node:child_process';import {processIdentity,sameProcess,stopOwnedGroup} from '../../server/src/lib/process-owner.js';import {withSession,ready} from './process-fixtures.mjs';
+const sleep=(n:number)=>new Promise(r=>setTimeout(r,n));
+async function gone(pid:number){for(let i=0;i<40&&processIdentity(pid);i++)await sleep(25);assert.equal(processIdentity(pid),null);}
+test('strict command check still rejects changed provenance and PID reuse',async()=>{const c=spawn('sleep',['30']);try{await new Promise(r=>c.once('spawn',r));const rec=processIdentity(c.pid!);assert.ok(rec);assert.equal(sameProcess(rec),true);assert.equal(sameProcess({...rec,starttime:'invalid'}),false);assert.equal(sameProcess({...rec,command:['foreign']}),false);}finally{c.kill();}});
+test('owned detached gateway shutdown removes worker ignoring TERM',async()=>{await withSession(process.execPath,['-e',`const {spawn}=require('child_process');const w=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});console.log(w.pid);setInterval(()=>{},1000);`],async(c:any)=>{const worker=Number(await ready(c));await sleep(150);const rec=processIdentity(c.pid);assert.ok(rec);await stopOwnedGroup(rec,150);await gone(worker);});});
+test('process stat handles comm containing closing parenthesis and space',async()=>{await withSession('python3',['-c',"import ctypes,time;ctypes.CDLL(None).prctl(15,b'own) worker',0,0,0);print('ready',flush=True);time.sleep(30)"],async(c:any)=>{await ready(c);const text=fs.readFileSync(`/proc/${c.pid}/stat`,'utf8');const rec=processIdentity(c.pid);assert.ok(rec);assert.equal(rec.starttime,text.slice(text.lastIndexOf(')')+1).trim().split(/\s+/)[19]);await stopOwnedGroup(rec,100);await gone(c.pid);});});
+test('gateway ownership survives a delayed exec in the same process lifetime',async()=>{await withSession('bash',['-c',"printf ready; sleep .2; exec sleep 30"],async(c:any)=>{await ready(c);const rec=processIdentity(c.pid);assert.ok(rec);await sleep(350);await assert.doesNotReject(stopOwnedGroup(rec,100));await gone(c.pid);});});
+test('shutdown discovers a worker forked by the TERM handler after its leader exits',async()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'term-worker-'));const file=dir+'/worker';try{await withSession('python3',['-c',`import os,signal,time\ndef term(*a):\n p=os.fork()\n if p:os._exit(0)\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n open(${JSON.stringify(file)},'w').write(str(os.getpid()))\n time.sleep(30)\nsignal.signal(signal.SIGTERM,term)\nprint('ready',flush=True)\ntime.sleep(30)`],async(c:any)=>{await ready(c);const rec=processIdentity(c.pid);assert.ok(rec);const kill=process.kill;process.kill=((pid:any,sig:any)=>{const result=kill(pid,sig);if(pid===-c.pid&&sig==='SIGTERM'){const until=Date.now()+500;while((!fs.existsSync(file)||processIdentity(c.pid))&&Date.now()<until){}}return result;}) as any;try{await stopOwnedGroup(rec,150);}finally{process.kill=kill;}for(let i=0;!fs.existsSync(file)&&i<50;i++)await sleep(10);assert.ok(fs.existsSync(file));await gone(Number(fs.readFileSync(file,'utf8')));});}finally{fs.rmSync(dir,{recursive:true});}});
+test('session fixture cleanup covers an assertion before identity capture',async()=>{let pid=0;await assert.rejects(withSession('sleep',['30'],async(c:any)=>{pid=c.pid;throw Error('injected setup failure');}),/injected setup/);await gone(pid);});
+test('shutdown includes worker in a different process group of the same session',async()=>{await withSession('python3',['-c',`import os,time,signal
+p=os.fork()
+if not p:
+ os.setpgid(0,0);signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(30)
+else:
+ print(p,flush=True);time.sleep(30)`],async(c:any)=>{const worker=Number(await ready(c));await sleep(100);const rec=processIdentity(c.pid);assert.ok(rec);await stopOwnedGroup(rec,100);await gone(worker);});});
+test('persisted detached identity still cleans session after the leader exits',async()=>{const dir=fs.mkdtempSync(os.tmpdir()+'/dead-leader-');try{await withSession('python3',['-c',`import os,time
+from pathlib import Path
+p=os.fork()
+if not p:time.sleep(30)
+else:
+ print(p,flush=True)
+ while not Path(${JSON.stringify(dir+'/exit')}).exists():time.sleep(.01)
+ os._exit(0)`],async(c:any)=>{const worker=Number(await ready(c));const rec=processIdentity(c.pid);assert.ok(rec);fs.writeFileSync(dir+'/exit','');await gone(c.pid);await stopOwnedGroup(rec,100);await gone(worker);});}finally{fs.rmSync(dir,{recursive:true});}});

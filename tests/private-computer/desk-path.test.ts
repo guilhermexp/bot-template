@@ -1,0 +1,10 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'hq root with spaces '));Object.assign(process.env,{SESSION_SECRET:'unit',DAYTONA_API_KEY:'unit',DAYTONA_API_URL:'https://computer.example/api',DAYTONA_SANDBOX_ID:'unit',HQ_ROOT:root,HQ_LOCAL:'1',HQ_DESK_PYTHON:process.env.PYTHON??'/usr/bin/python3'});
+test('desk script invocation supports a dedicated root with spaces',async()=>{
+ const {box}=await import('../../server/src/box.js');box.writeFile=async()=>{throw Error('unexpected install: existing helper should answer');};fs.mkdirSync(path.join(root,'desktop'),{recursive:true});
+ // SCRIPT lives in the owned desk root; discover it from the command without weakening shell execution.
+ const original=box.bash;box.bash=async(command,...args)=>{const target=path.join(root,'desktop/hq-screen.py');fs.writeFileSync(target,"print('HQ_BASE_OK')\n");return original(command,...args);};
+ const {ensureDeskBase}=await import('../../server/src/desk.js');try{await assert.doesNotReject(ensureDeskBase());}finally{box.bash=original;}
+});
+
+test('remote desktop helper receives the configured root with spaces',async()=>{const {env}=await import('../../server/src/env.js');const {daytona}=await import('../../server/src/computer-provider.js');const {execFile}=await import('node:child_process');const {openTerminal}=await import('../../server/src/desk.js');const original=daytona.execute;const local=env.localBox;const helper=path.join(root,'desktop/hq-screen.py');fs.writeFileSync(helper,"import os\nassert os.environ['HQ_ROOT']=="+JSON.stringify(root)+"\nprint('HQ_DONE {\"ok\":true}')\n");env.localBox=false;daytona.execute=async command=>new Promise(resolve=>execFile('bash',['-c',command],{env:{PATH:'/usr/bin:/bin'}},(error,out,err)=>resolve({exitCode:error?1:0,result:out+err})));try{await assert.doesNotReject(openTerminal('screen-101','true'));}finally{env.localBox=local;daytona.execute=original;}});

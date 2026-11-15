@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'hq-read-'));Object.assign(process.env,{SESSION_SECRET:'unit',DAYTONA_API_KEY:'unit',DAYTONA_API_URL:'https://computer.example/api',DAYTONA_SANDBOX_ID:'unit',HQ_ROOT:root,HQ_LOCAL:'0'});
+test('readFile returns null only for not found; auth/network/local read errors propagate',async()=>{
+ const {box}=await import('../../server/src/box.js');const {daytona}=await import('../../server/src/computer-provider.js');const {ComputerError}=await import('../../server/src/daytona.js');const {env}=await import('../../server/src/env.js');const original=daytona.download;
+ try{
+  daytona.download=async()=>{throw new ComputerError(404,'not found');};assert.equal(await box.readFile('/absent'),null);
+  for(const error of [new ComputerError(401,'auth'),new ComputerError(500,'server'),new Error('network')]){daytona.download=async()=>{throw error;};await assert.rejects(box.readFile('/file'),e=>e===error);}
+  env.localBox=true;assert.equal(await box.readFile(path.join(root,'absent')),null);await assert.rejects(box.readFile(root),{code:'EISDIR'});fs.writeFileSync(path.join(root,'file'),'readback');assert.equal((await box.readFile(path.join(root,'file')))!.toString(),'readback');
+ }finally{env.localBox=false;daytona.download=original;fs.rmSync(root,{recursive:true});}
+});
+test('remote write creates missing parent before upload and applies mode',async()=>{const dir=fs.mkdtempSync(os.tmpdir()+'/hq-upload-');const file=dir+'/nested/deep/file';const {box}=await import('../../server/src/box.js');const {daytona}=await import('../../server/src/computer-provider.js');const {execFile}=await import('node:child_process');const oldBash=box.bash,oldUpload=daytona.upload;try{box.bash=async command=>new Promise(resolve=>execFile('bash',['-c',command],e=>resolve({output:'',exit_code:e?1:0})));daytona.upload=async(dest,bytes)=>{assert.equal(fs.existsSync(path.dirname(dest)),true,'parent must exist before upload');fs.writeFileSync(dest,bytes);};await box.writeFile(file,'owned','0600');assert.equal(fs.readFileSync(file,'utf8'),'owned');assert.equal(fs.statSync(file).mode&511,0o600);}finally{box.bash=oldBash;daytona.upload=oldUpload;fs.rmSync(dir,{recursive:true});}});

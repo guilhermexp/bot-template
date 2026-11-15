@@ -1,8 +1,10 @@
+import {gatewayIdentity} from './lib/gateway-owner.js';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import {processIdentity, stopOwnedGroup, type ProcessIdentity} from './lib/process-owner.js';
 import { displayFor } from './box.js';
 import { cdpUrlFor, screenFor } from './computer.js';
 import { db } from './db.js';
@@ -163,7 +165,7 @@ async function writeHome(botId: string): Promise<{ home: string; key: string; di
     }
   }
 
-  const cwd = env.localBox ? `/root/grokbot/files/${botId}` : path.join(home, 'workspace');
+  const cwd = env.localBox ? path.join(env.hqRoot, 'files', botId) : path.join(home, 'workspace');
   fs.mkdirSync(cwd, { recursive: true });
 
   const cfgFile = path.join(home, 'config.yaml');
@@ -199,7 +201,7 @@ async function writeHome(botId: string): Promise<{ home: string; key: string; di
   const primaryEnv = readDotenv(path.join(env.hermesHome, '.env'));
   const vars: Record<string, string> = { ...mine };
   for (const k of SHARED_ENV) {
-    const v = primaryEnv[k] ?? process.env[k];
+    const v = primaryEnv[k] || process.env[k];
     if (v && !vars[k]) vars[k] = v;
   }
   Object.assign(vars, { API_SERVER_ENABLED: 'true', API_SERVER_KEY: key, API_SERVER_PORT: String(b.engine_port), API_SERVER_HOST: '127.0.0.1' });
@@ -227,44 +229,21 @@ async function keyAccepted(url: string, key: string): Promise<boolean> {
 
 /** The gateway's pid, but only if the pid file belongs to this home and the process is alive. */
 function gatewayPid(home: string): number | null {
-  let raw = '';
-  try { raw = fs.readFileSync(path.join(home, 'gateway.pid'), 'utf8').trim(); } catch { return null; }
-  let pid = NaN;
-  try {
-    const j = JSON.parse(raw);
-    if (typeof j === 'number') pid = j;
-    else {
-      if (j?.hermes_home && path.resolve(j.hermes_home) !== path.resolve(home)) return null;
-      pid = Number(j?.pid);
-    }
-  } catch { pid = Number(raw); }
-  if (!Number.isInteger(pid) || pid <= 1) return null;
-  try { process.kill(pid, 0); } catch { return null; }
-  try {
-    if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('gateway')) return null;
-  } catch { /* no /proc: trust the pid file */ }
-  return pid;
+  return gatewayIdentity(home,env.hermesBin)?.pid ?? null;
 }
 
 async function stopGateway(botId: string) {
   const home = homeFor(botId);
   const pid = gatewayPid(home);
   if (!pid) return;
-  const signal = (sig: NodeJS.Signals) => {
-    try { process.kill(-pid, sig); } catch { try { process.kill(pid, sig); } catch { /* gone */ } }
-  };
-  signal('SIGTERM');
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 250));
-    try { process.kill(pid, 0); } catch { return; }
-  }
-  signal('SIGKILL');
-  await new Promise((r) => setTimeout(r, 300));
+  const rec = JSON.parse(fs.readFileSync(path.join(home, 'hq-process.json'), 'utf8')) as ProcessIdentity;
+  await stopOwnedGroup(rec);
 }
 
 const starting = new Map<string, Promise<void>>();
 const failures = new Map<string, string>();
 const keys = new Map<string, string>();
+const verifiedGateways = new Map<string,{until:number;pid:number;starttime:string}>();
 
 function managedUrl(botId: string): string {
   return `http://127.0.0.1:${botRow(botId).engine_port}`;
@@ -286,7 +265,10 @@ async function startGateway(botId: string): Promise<void> {
   const url = managedUrl(botId);
 
   // A gateway from an earlier run of this server is still good: use it as it is.
-  if ((await healthy(url)) && managedKey(botId) && (await keyAccepted(url, managedKey(botId)))) return;
+  if ((await healthy(url)) && managedKey(botId) && (await keyAccepted(url, managedKey(botId)))) {
+    if(!gatewayPid(homeFor(botId)))throw new Error('Healthy gateway lacks a verifiable identity; migration required');
+    return;
+  }
   if (await healthy(url)) {
     if (gatewayPid(homeFor(botId))) await stopGateway(botId);
     else throw new Error(`Port ${botRow(botId).engine_port} is taken by something else.`);
@@ -296,6 +278,7 @@ async function startGateway(botId: string): Promise<void> {
   keys.set(botId, key);
   if (gatewayPid(home)) await stopGateway(botId);
 
+  fs.rmSync(path.join(home, 'hq-process.json'), {force:true});
   const log = fs.openSync(path.join(home, 'logs', 'gateway.out.log'), 'a');
   const child = spawn(env.hermesBin, ['gateway', 'run', '--no-supervise'], {
     cwd: home,
@@ -304,7 +287,7 @@ async function startGateway(botId: string): Promise<void> {
     // Only what the agent needs. None of this server's secrets, and nothing of the primary agent's messaging.
     env: {
       PATH: process.env.PATH ?? '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-      HOME: process.env.HOME ?? '/root',
+      HOME: env.hqRoot + '/home',
       USER: process.env.USER ?? 'root',
       LANG: process.env.LANG ?? 'C.UTF-8',
       HERMES_HOME: home,
@@ -312,7 +295,7 @@ async function startGateway(botId: string): Promise<void> {
       // Hermes' browser tool talks to a helper process it finds under this folder. With the default
       // (one folder per HOME) every agent on the computer would end up driving the same browser.
       BH_HOME: path.join(home, 'browser-harness'),
-      ...(display ? { DISPLAY: display } : {}),
+      ...(display ? { DISPLAY: display, XAUTHORITY:path.join(env.hqRoot,'screens',display.slice(1),'Xauthority') } : {}),
     },
   });
   fs.closeSync(log);
@@ -324,6 +307,10 @@ async function startGateway(botId: string): Promise<void> {
   for (let i = 0; i < 90; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     if (exited) throw new Error(exited);
+    if (child.pid && !fs.existsSync(path.join(home, 'hq-process.json'))) {
+      const identity = processIdentity(child.pid);
+      if (identity) writePrivate(path.join(home, 'hq-process.json'), JSON.stringify({...identity, home:path.resolve(home)}));
+    }
     if (await healthy(url, 1500)) {
       console.log(`[engine] ${b.name}: gateway up on ${url}`);
       return;
@@ -361,7 +348,14 @@ export async function engineFor(botId: string): Promise<Engine> {
   }
   if (kind === 'primary') return { kind, url: env.hermesUrl, key: primaryKey(), home: env.hermesHome };
   const url = managedUrl(botId);
-  if (!(await healthy(url, 1500)) || !managedKey(botId)) await ensureManaged(botId);
+  const cached=verifiedGateways.get(botId);
+  const rec=cached?gatewayIdentity(homeFor(botId),env.hermesBin):null;
+  if(!cached||cached.until<=Date.now()||!rec||rec.pid!==cached.pid||processIdentity(rec.pid)?.starttime!==cached.starttime){
+    verifiedGateways.delete(botId);
+    await ensureManaged(botId);
+    const current=gatewayIdentity(homeFor(botId),env.hermesBin);
+    if(current)verifiedGateways.set(botId,{until:Date.now()+5000,pid:current.pid,starttime:current.starttime});
+  }
   return { kind, url, key: managedKey(botId), home: homeFor(botId) };
 }
 
@@ -407,7 +401,8 @@ export function stopOwnScreen(botId: string): Promise<void> {
 
 /** Start the gateway in the background (after creating a bot, or on server start). */
 export function provisionEngine(botId: string) {
-  if (engineKind(botId) === 'managed') ensureManaged(botId).catch(() => {});
+  // Gateways start on demand in engineFor; creating a roster never consumes four runtimes.
+  // Idle is not a failure. Actual startup failures remain in failures until retried.
 }
 
 export async function restartEngine(botId: string): Promise<void> {
@@ -415,7 +410,7 @@ export async function restartEngine(botId: string): Promise<void> {
   await starting.get(botId)?.catch(() => {});
   await stopGateway(botId);
   optionsCache.delete(botId);
-  provisionEngine(botId);
+  await ensureManaged(botId);
 }
 
 /** The bot is gone: stop its gateway and delete its home. The primary agent is left alone. */
@@ -425,6 +420,7 @@ export async function removeEngine(botId: string): Promise<void> {
   await starting.get(botId)?.catch(() => {});
   await stopGateway(botId);
   keys.delete(botId);
+  verifiedGateways.delete(botId);
   failures.delete(botId);
   optionsCache.delete(botId);
   if (path.resolve(home).startsWith(path.resolve(env.enginesDir) + path.sep)) fs.rmSync(home, { recursive: true, force: true });
@@ -496,8 +492,7 @@ export async function engineInfo(botId: string): Promise<EngineInfo> {
     if (starting.has(botId)) return { ...base, status: 'starting' };
     const failed = failures.get(botId);
     if (failed) return { ...base, status: 'error', error: failed };
-    provisionEngine(botId);
-    return { ...base, status: 'starting' };
+    return { ...base, status: 'stopped' };
   }
   if (kind === 'managed' && starting.has(botId)) return { ...base, status: 'starting' };
 

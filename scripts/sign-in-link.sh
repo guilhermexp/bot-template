@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# Print a link that signs one browser in to the app, once, within 15 minutes. Run ON the computer, as root.
-#   bash sign-in-link.sh you@example.com
-# For when Google sign-in is not set up or not working. The address must be in ALLOWED_EMAILS
-# (or already have an account). The key it uses never leaves this machine.
+# Store a one-use sign-in URL privately; no secret or URL in argv/stdout.
 set -euo pipefail
-email="${1:?usage: sign-in-link.sh <email>}"
-ENV_FILE="${ENV_FILE:-/opt/hq/app/.env}"
-val() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-; }
-key="$(printf 'owner-login' | openssl dgst -sha256 -hmac "$(val SESSION_SECRET)" -r | cut -d' ' -f1)"
-curl -fsS -X POST "http://127.0.0.1:$(val PORT)/api/auth/owner" \
-  -H "authorization: Bearer $key" -H 'content-type: application/json' \
-  -d "{\"email\":\"$email\",\"link\":true}" | sed -E 's/.*"url":"([^"]+)".*/\1/'
-echo
+: "${HQ_ROOT:?dedicated HQ_ROOT required}"
+export HQ_SIGNIN_EMAIL="${1:?email required}"
+python3 - <<'PYTHON'
+import os,json,hmac,hashlib,urllib.request,tempfile,subprocess,sys
+from pathlib import Path
+r=Path(os.environ['HQ_ROOT'])
+parser="import fs from 'node:fs';import {parseEnv} from 'node:util';const e=parseEnv(fs.readFileSync(process.env.HQ_ROOT+'/config/app.env','utf8'));console.log(JSON.stringify({PORT:e.PORT||'8787',SESSION_SECRET:e.SESSION_SECRET}));"
+try:e=json.loads(subprocess.check_output([str(r/'runtime/node'),'--input-type=module','-e',parser],stderr=subprocess.PIPE))
+except (OSError,subprocess.CalledProcessError,ValueError):sys.exit('Cannot parse dedicated app.env with private Node runtime')
+key=hmac.new(e['SESSION_SECRET'].encode(),b'owner-login',hashlib.sha256).hexdigest()
+req=urllib.request.Request('http://127.0.0.1:'+e['PORT']+'/api/auth/owner',data=json.dumps({'email':os.environ['HQ_SIGNIN_EMAIL'],'link':True}).encode(),headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+with urllib.request.urlopen(req) as response: data=json.load(response)
+p=r/'config/sign-in.json'
+fd,tmp=tempfile.mkstemp(dir=p.parent,prefix='.sign-in-')
+try:
+ with os.fdopen(fd,'w') as f:f.write(json.dumps(data))
+ os.replace(tmp,p)
+finally:
+ if os.path.exists(tmp):os.unlink(tmp)
+print('One-use sign-in stored in private config/sign-in.json (15 minutes)')
+PYTHON

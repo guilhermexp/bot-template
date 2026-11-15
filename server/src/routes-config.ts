@@ -10,7 +10,7 @@ import { env } from './env.js';
 import { emitBot, getBotRow, listRoutines, listTasks } from './store.js';
 import { computerState, readyScreen, resetBotScreen } from './computer.js';
 import { box } from './box.js';
-import { orgo } from './orgo.js';
+
 import { openTerminal } from './desk.js';
 import { engineHome, engineInfo, engineKind, forgetEngineOptions, restartEngine, stopOwnScreen } from './engine.js';
 import { listMemories } from './engine-memory.js';
@@ -198,7 +198,7 @@ configApi.post('/bots/:id/handback', (c) => {
 
 // ---------- library: files under /root/grokbot/files/<botId> on the bot's computer ----------
 
-const LIB_ROOT = '/root/grokbot/files';
+const LIB_ROOT = env.hqRoot + '/files';
 
 function safeRel(p: string | undefined): string | null {
   const rel = (p ?? '').replace(/^\/+|\/+$/g, '');
@@ -247,17 +247,8 @@ configApi.post('/bots/:id/files/download', async (c) => {
   const { path } = await c.req.json<{ path: string }>().catch(() => ({ path: '' }));
   const rel = safeRel(path);
   if (!rel) return c.json({ error: 'bad path' }, 400);
-  // On the computer itself the file is on our own disk: serve it directly.
-  if (box.local) return c.json({ url: `/api/bots/${b.id}/files/raw?path=${encodeURIComponent(rel)}` });
-  try {
-    if (!env.orgoComputerId) return c.json({ error: 'computer unavailable' }, 409);
-    const r: any = await orgo.exportFile(env.orgoComputerId, `${LIB_ROOT}/${b.id}/${rel}`);
-    const url = r?.url ?? r?.file?.url ?? r?.download_url;
-    if (!url) return c.json({ error: 'export returned no link' }, 502);
-    return c.json({ url });
-  } catch (e: any) {
-    return c.json({ error: String(e?.message ?? e).slice(0, 300) }, 502);
-  }
+  if (!box.local) return c.json({error:'Library downloads require HQ_LOCAL=1 in the private guest'},409);
+  return c.json({ url: `/api/bots/${b.id}/files/raw?path=${encodeURIComponent(rel)}` });
 });
 
 configApi.get('/bots/:id/files/raw', (c) => {

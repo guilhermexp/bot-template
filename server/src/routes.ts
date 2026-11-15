@@ -11,7 +11,7 @@ import { enqueue, interrupt, resolveApproval } from './agent/loop.js';
 import { computerState, ensureComputer, forgetBotFiles, readyScreen, refreshComputer, releaseScreen, suspendComputer } from './computer.js';
 import { assignEngine, provisionEngine, removeEngine, syncPersona } from './engine.js';
 import { deleteMemory, listMemories, memoryBot } from './engine-memory.js';
-import { orgo } from './orgo.js';
+import { computerProvider as orgo } from './computer-provider.js';
 import { catalog, connectedToolkits, deleteConnection, disconnect, googleProfile, startConnect, startGoogleLogin, toolkitInfo } from './composio.js';
 import { runRoutine, scheduleRoutine, unscheduleRoutine } from './routines.js';
 import { deleteEventTrigger } from './triggers.js';
@@ -389,13 +389,19 @@ api.get('/bots/:id/screenshot', async (c) => {
   const user = c.get('user');
   const b = ownBot(user.id, c.req.param('id'));
   if (!b) return c.json({ error: 'not found' }, 404);
-  const scr = db.prepare('SELECT screen_id FROM screens WHERE bot_id=?').get(b.id) as any;
-  if (!env.orgoComputerId || computerState(user.id).status !== 'running' || !scr) return c.body(null, 204);
+  let stage = 'ready';
   try {
+    const scr = db.prepare('SELECT screen_id FROM screens WHERE bot_id=? AND user_id=?').get(b.id,user.id) as any;
+    if (!env.orgoComputerId || computerState(user.id).status !== 'running' || !scr) return c.body(null,204);
+    stage = 'capture';
     const s = await orgo.screenshot(env.orgoComputerId, scr.screen_id);
+    stage = 'response';
     const b64 = s.image.replace(/^data:[^,]+,/, '');
     return c.body(Buffer.from(b64, 'base64'), 200, { 'Content-Type': s.mime_type ?? 'image/jpeg', 'Cache-Control': 'no-store' });
-  } catch {
+  } catch (e: any) {
+    const message = String(e?.message ?? '');
+    const reason = /PIL|No module named/.test(message) ? 'missing-python-module' : /helper unavailable/.test(message) ? 'helper-output-unavailable' : /ownership|collision|lease/i.test(message) ? 'lease-state' : /timeout|timed out|taking too long/i.test(message) ? 'timeout' : 'other';
+    console.warn('[computer] screenshot unavailable', {stage, reason, status: typeof e?.status === 'number' ? e.status : undefined});
     return c.body(null, 204);
   }
 });
@@ -403,6 +409,7 @@ api.get('/bots/:id/screenshot', async (c) => {
 // ---------- apps (Composio marketplace) ----------
 
 api.get('/apps', async (c) => {
+  if (!env.composioKey) return c.json({error:'Configure COMPOSIO_API_KEY to use connected apps.'},503);
   const user = c.get('user');
   const search = (c.req.query('search') ?? '').toLowerCase();
   const category = c.req.query('category') ?? '';

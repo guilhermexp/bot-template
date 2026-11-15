@@ -101,7 +101,7 @@ function GeneralSection() {
 
 // ---------------------------------------------------------------------------
 
-const screenLabel = (id: string) => (id === 'default' ? 'Main screen' : `Screen ${Number(id.replace('screen-', '')) - 98 || id}`);
+const screenLabel = (id: string) => (id === 'default' ? 'Main screen' : `Screen ${Number(id.replace('screen-', '')) - 99 || id}`);
 
 function ComputerSection() {
   const computer = useStore((s) => s.computer);

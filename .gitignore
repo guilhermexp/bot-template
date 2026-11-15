@@ -15,3 +15,13 @@ docs/INTERNAL-*.md
 docs/SPEC.md
 web/screenshots/
 tests/out/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Private task receipts, credentials and deployment state
+.tmp/
+
+# Python helpers/tests generate these locally.
+__pycache__/
+*.py[cod]

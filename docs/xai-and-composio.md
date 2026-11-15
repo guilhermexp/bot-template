@@ -1,5 +1,7 @@
 # xAI API (Grok 4.7) and Composio: builder's reference for Grokbot
 
+> Provider reference retained for provenance. xAI and Composio are optional at boot; absent credentials produce configuration errors only on those features. The computer test does not call these providers. See [private-computer.md](private-computer.md).
+
 Researched 2026-11-09 from the official docs only: `docs.x.ai` (its `llms.txt` index plus per-page `.md` endpoints) and `docs.composio.dev` (its `llms.txt`, `llms-index.txt` and per-page `.md` endpoints), plus `composio.dev/pricing` for plan prices. No accounts were created and no authenticated calls were made, so nothing here has been run against a live key.
 
 Labels: **[D]** = stated in the docs (a URL is given). **[I]** = inferred by us. Verify these before relying on them. **[R]** = our recommendation for Grokbot.

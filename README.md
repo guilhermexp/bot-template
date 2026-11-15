@@ -4,7 +4,7 @@
 
 <p align="center">
   A team of AI agents you chat with, each with its own screen on one cloud computer.<br>
-  <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> runs the bots, <a href="https://orgo.ai">Orgo</a> gives them screens, <a href="https://composio.dev">Composio</a> connects their apps, and <a href="https://x.ai">xAI</a> gives them a voice and research on X.
+  <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> runs the bots, a private Daytona computer gives them screens, <a href="https://composio.dev">Composio</a> connects their apps, and <a href="https://x.ai">xAI</a> gives them a voice and research on X.
 </p>
 
 <p align="center">
@@ -71,12 +71,12 @@ flowchart LR
   S -- "POST /v1/responses" --> H2["Hermes gateway<br/>one per extra bot"]
   H1 -- "MCP /mcp/primary" --> S
   H2 -- "MCP /mcp/&lt;bot&gt;" --> S
-  S --> O["Orgo computer<br/>one screen per bot"]
+  S --> O["Private Daytona computer<br/>one owned screen per bot"]
   S --> C["Composio<br/>connected apps"]
   S --> X["xAI<br/>voice · X search"]
 ```
 
-- **One computer, one screen per bot.** All bots live on a single Orgo Linux computer. The first bot uses the computer's main screen; each further bot gets an Orgo screen of its own. Orgo allows four screens per computer, so four bots.
+- **One computer, one owned screen per bot.** The app uses an existing private Daytona computer. Four lazy screens100–103 include the app's primary screen100; the original desktop stays separate.
 - **The first bot is the Hermes agent that already runs on that computer.** The app talks to its gateway and never restarts it or rewrites its settings.
 - **Every other bot gets its own Hermes home and gateway**, started by the app. Each has its own model, sign-in, memory, browser profile and files.
 - **The app's tools reach Hermes over MCP.** The server exposes `/mcp/<bot>`. Each agent gets connected apps, `x_search`, tasks, routines, the Library, and messages to other bots.
@@ -98,79 +98,114 @@ Hermes Desktop has its own Bot Mode. Bot HQ uses the same Hermes engine but does
 
 So bots made here do not show up in Hermes Desktop's Bots tab, and bots made there do not show up here.
 
-## Install on the computer
+## Existing deployments
 
-The app is meant to run on the same Orgo computer as Hermes.
+This change intentionally moves the app to a dedicated `HQ_ROOT` and private Daytona
+configuration. Upgrading requires configuration changes; copying the new `.env.example`
+over a working deployment is not a migration. Nothing automatically copies an old
+database, Hermes home, credentials or profiles. There is no fallback to Orgo or to a
+user's global `~/.hermes`.
 
-1. On your machine: `npm ci && scripts/pack.sh hq-app.tgz`. Copy `hq-app.tgz` and `scripts/install-on-computer.sh` to the computer.
-2. In Orgo, create a public URL for port `8787` on that computer.
-3. On the computer, as root:
+| Setting | Previous default | New default / requirement |
+|---|---|---|
+| `HQ_ROOT` | Not used | Exclusive absolute root, default `~/bot-template-private` |
+| `DB_PATH` | Repository `data/grokbot.db` | `HQ_ROOT/data/hq.db`; explicit absolute `DB_PATH` can retain an existing database |
+| `HERMES_HOME_PRIMARY` | `~/.hermes` | `HQ_ROOT/hermes-primary`; must resolve inside `HQ_ROOT` |
+| `ENGINES_DIR` | Repository `data/engines` | `HQ_ROOT/engines`; must resolve inside `HQ_ROOT` |
 
-   ```bash
-   PUBLIC_URL=https://<name>.orgo.dev ORGO_COMPUTER_ID=<uuid> ALLOWED_EMAILS=you@example.com \
-   KEYS_FILE=/root/keys.txt PRIMARY_CDP_URL=http://127.0.0.1:9333 \
-     bash install-on-computer.sh hq-app.tgz
-   ```
+When the previous default `data/grokbot.db` exists and `DB_PATH` is unset, startup stops
+with an actionable error before opening a new database. Set `DB_PATH` explicitly to
+the existing absolute path to retain it, or migrate it before starting. Keep an existing
+explicit `DB_PATH` if your old database used another location: the app cannot discover
+arbitrary old paths. If both old and new files exist, select one explicitly. Detection
+uses file metadata and does not open the legacy database.
 
-   `KEYS_FILE` holds `XAI_API_KEY=` and `COMPOSIO_API_KEY=` lines (and `ORGO_API_KEY=` if Hermes' own `.env` has none); it is deleted after the first install. `PRIMARY_CDP_URL` is only for a main agent that already has its own Chrome. The script installs to `/opt/hq`, adds one supervisor program (`hq-app`), and leaves Hermes alone. Running it again with a newer `hq-app.tgz` upgrades the app and keeps its settings and data.
-4. Give the main agent the app's tools: `python3 /opt/hq/app/scripts/add-hq-to-hermes.py`. It adds one `mcp_servers.hq` entry to Hermes' `config.yaml`, keeps a dated copy of the file, and Hermes picks the change up without a restart. `--remove` takes it out again.
-5. Open the public URL and sign in with Google. If Google sign-in is not set up yet, `bash /opt/hq/app/scripts/sign-in-link.sh you@example.com` on the computer prints a one-time sign-in link.
+Before upgrading an installation you own:
 
-<details>
-<summary><b>Remove everything</b></summary>
+1. Record its effective database path, primary Hermes home, managed homes, profiles,
+   Library and app configuration. Stop only that app and its own managed gateways;
+   do not stop a shared desktop, runner or unrelated primary gateway.
+2. Back up each complete affected unit with ownership, permissions and timestamps.
+   Preserve the SQLite unit including any `-wal`/`-shm` files; copying only the main file
+   while a writer is running is insufficient. Keep the original units intact.
+3. Choose an exclusive `HQ_ROOT`. Keep the backed-up existing database path as explicit
+   `DB_PATH`, or copy the complete quiescent unit into the dedicated data directory and
+   set `DB_PATH` to the migrated file for the first start.
+4. Only for Hermes homes belonging to this installation, copy each complete home into
+   the dedicated primary/managed directories with metadata preserved. Set explicit
+   `HERMES_HOME_PRIMARY` and `ENGINES_DIR` inside `HQ_ROOT`; symlinks escaping it are
+   rejected even when the destination does not exist yet. Do not borrow an unrelated
+   global Hermes configuration or credentials. If the old primary is shared, provision
+   a separate dedicated primary and authenticate it instead of relocating it.
+5. Preserve the whole copied configuration before updating paths and the MCP endpoint,
+   verify that only intended settings changed, and supply private Daytona configuration
+   through backend files. Start only dedicated services; verify existing users, bots,
+   sessions, Library and model state before accepting the upgrade.
 
-On the computer:
+To roll back, stop only the upgraded app and its own gateways, restore the complete
+backed-up configuration/data units with metadata, and use the previous application
+version and its environment. Do not delete originals to make the new layout appear
+empty or successful. These are operator instructions; the private test deployment
+never reads or copies another installation's credentials.
+
+## Install on the existing private computer
+
+The supported test deployment runs the HQ inside an existing Daytona sandbox with `HQ_LOCAL=1`.
+Set `HQ_ROOT=/home/daytona/bot-template-private` and upload the built artifact and a private
+`config/daytona.env` using the existing toolbox files API. It contains `DAYTONA_API_URL`,
+`DAYTONA_API_KEY` and `DAYTONA_SANDBOX_ID`. Use mode 0600 in a 0700 directory.
+The server also accepts `DAYTONA_API_KEY_FILE`; the key stays in the backend.
+No Orgo fallback or sandbox lifecycle actions are available.
+
+Build on the development box (`npm ci`, `npm rebuild better-sqlite3 esbuild`, `npm run build`).
+Package `server/dist`, `server/box`, `web/dist`, `web/src/avatar/shapes.gen.ts`, `scripts` and production dependencies, along
+with a compatible private Node runtime. For first install, upload the installer to a new
+operator-owned temporary path and run `HQ_ROOT=... bash <installer-path> --prepare` before
+uploading files into `HQ_ROOT`; this creates the ownership marker and private directories.
+An existing unmarked root is refused. Upload the runtime/artifact and private config only
+after preparation, then install using `scripts/install-on-computer.sh`;
+it writes under `HQ_ROOT`, retains the complete old app under `incoming/app-before-*`,
+and does not restart services. Stop only this installation before replacing its files. See
+[private deployment and verification](docs/private-computer.md) for the tested snapshot,
+Hermes provenance, optional dependencies, private access and rollback.
+
+`python3 app/scripts/private-service.py start app` starts the app with dedicated HOME/XDG.
+The corresponding `stop app` verifies PID, kernel start time and command before stopping it.
+SQLite, profiles and Library live outside `app/`; keep them across upgrades.
+Hermes primary and managed homes are dedicated to this installation; global credentials
+are never imported. Configure a model in that dedicated home before a real conversation.
+Creating a bot does not eagerly start every managed gateway.
+
+The app has four lazy leases, mapped centrally to displays 100–103, with private loopback VNC,
+WebSocket and CDP ports. The original desktop and displays 0/99 are outside the registry.
+Browser profiles, GTK settings and desktop helpers belong to this root only.
+Downloads still require the bot owner's session and resolve real paths before serving files.
+
+## Development
+
+Copy `.env.example`, configure the existing private computer and a session secret, then run
+`npm run dev`. Computer viewers require deployment inside that guest (`HQ_LOCAL=1`).
+Do not run `tests/e2e.mjs` against unapproved external providers.
 
 ```bash
-python3 /opt/hq/hq-screen.py undress 99                      # main screen back to how it was (99 = its X display)
-python3 /opt/hq/app/scripts/add-hq-to-hermes.py --remove     # take the tools out of Hermes
-supervisorctl stop hq-app && supervisorctl remove hq-app
-rm -rf /etc/supervisor/conf.d/hq-app.conf /opt/hq /var/log/hq /root/grokbot /etc/opt/chrome/policies/managed/hq.json
+npm run test:private-computer
+npm run typecheck
+npm run build
 ```
 
-Then delete the public URL in Orgo. Screens of the other bots are released when you delete those bots in the app.
-
-</details>
-
-## Run it locally
-
-You need **Node.js 22 or newer** and a Hermes gateway with its API server on (`API_SERVER_KEY` in `~/.hermes/.env`).
-
-```bash
-git clone https://github.com/nickvasilescu/bot-hq.git
-cd bot-hq
-npm ci
-cp .env.example .env      # fill in the keys; comments in the file explain each one
-npm run dev -w server     # API on :8787
-npm run dev -w web        # app on :5173
-```
-
-With `HQ_LOCAL=0` the server reaches the computer through the Orgo API instead of running commands on it, which is enough for development. `DEV_LOGIN=1` enables the email-only sign-in form; never set it on a public address.
-
-`npm run build && npm start` serves the built app from the API port.
-
-The keys you need:
-
-| Key | Used for |
-|---|---|
-| `ORGO_API_KEY`, `ORGO_COMPUTER_ID` | The computer and its screens |
-| `COMPOSIO_API_KEY` | Connected apps |
-| `XAI_API_KEY` | Voice and `x_search` |
-| `SESSION_SECRET` | Sign-in sessions and the tokens agents use to reach `/mcp` |
+xAI and Composio are optional. Their features return an actionable configuration error when
+absent; computer login, screens and Library remain testable using the owner sign-in flow.
+`HQ_ROOT=... bash scripts/sign-in-link.sh operator@example.com` stores a one-use sign-in
+URL in private `config/sign-in.json` without printing its credentials.
 
 ## Models and subscriptions
 
 Open a bot's details panel, **Engine**. Pick a provider and model there. **Sign in to a subscription** opens a terminal on the bot's screen running Hermes' own sign-in for that provider (for example Claude Pro/Max), so you finish it in the viewer and the bot uses that subscription from then on. Check your provider's terms before running an agent on a consumer subscription.
 
-## Development
-
-```bash
-npm run typecheck       # server and web
-npm run build
-node tests/e2e.mjs https://<your-url>    # needs DEV_LOGIN=1, or E2E_SESSION=<session cookie>
-```
-
-The e2e suite creates a temporary bot (with its own Hermes gateway and screen), exercises chat, the browser on its screen, the live viewer, connected apps, voice sessions and settings, then deletes it. It calls real providers.
+The legacy `tests/e2e.mjs` calls real providers; do not run it without separate provider authorization.
+The process/session fixtures in `test:private-computer` require Linux with `/proc` by design.
+Run that suite on the Linux box/guest; macOS can review the snapshot and run typecheck/build,
+but cannot attest these kernel identities. No unverified process-group kill fallback is used.
 
 ```text
 server/src/         API, Hermes adapter (agent/loop.ts), engines (engine.ts), MCP endpoint (mcp.ts), screens (computer.ts)
@@ -185,7 +220,7 @@ docs/               architecture; the Orgo and xAI/Composio guides predate the H
 
 - Experimental, no security audit. Bots share one computer and can reach each other's files there.
 - Approval cards cover Composio write actions. What a bot does through its browser or shell is not gated, and Hermes' own "risky command" prompts are not shown in the app yet.
-- Four bots at most, because of Orgo's four-screen limit.
+- Four bots at most, in the app-owned lease registry.
 - The app still calls itself "Grokbot" in places (page title, package names, the database file).
 - The screen look is an original implementation inspired by OrgoAI/bops; no code or assets from that repository are used.
 

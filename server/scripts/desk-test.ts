@@ -1,8 +1,9 @@
 /**
+ * Legacy diagnostic; not the private-computer canonical suite. See tests/private-computer/.
  * Dresses a few screens of the TEST computer for made-up bots and checks the result.
  *
  *   cd platform/server
- *   ORGO_COMPUTER_ID=<test computer id> npx tsx --env-file=../.env scripts/desk-test.ts
+ *   DAYTONA_SANDBOX_ID=<test computer id> npx tsx --env-file=../.env scripts/desk-test.ts
  *
  * What it does, in order:
  *   1. uses up to three extra screens (creates screens only when fewer than two exist)
@@ -41,7 +42,7 @@ const MAIN_BOT: DeskBot = { id: 'bot_ash', name: 'Ash', label: 'Chief of staff',
 const EVAL_PY = String.raw`import base64, json, os, socket, struct, sys, urllib.request
 port, expr = int(sys.argv[1]), sys.argv[2]
 targets = json.load(urllib.request.urlopen('http://127.0.0.1:%d/json' % port, timeout=3))
-home = [t for t in targets if t.get('url', '').startswith('http://127.0.0.1:7391/')]
+home = [t for t in targets if t.get('url', '').startswith('http://127.0.0.1:17391/')]
 if not home:
     print(json.dumps({'error': 'no home page', 'targets': [[t['type'], t['title'], t['url'][:60]] for t in targets]}))
     sys.exit(0)
@@ -315,7 +316,7 @@ async function testDefault(): Promise<void> {
 
 async function main(): Promise<void> {
   if (box.local) throw new Error('this test drives a remote test computer through Orgo; run it without HQ_LOCAL');
-  if (!env.orgoComputerId) throw new Error('set ORGO_COMPUTER_ID to the test computer');
+  if (!env.orgoComputerId) throw new Error('set DAYTONA_SANDBOX_ID to the test computer');
   fs.mkdirSync(SHOTS, { recursive: true });
   say(`test computer ${env.orgoComputerId}, screenshots in ${SHOTS}`);
 
